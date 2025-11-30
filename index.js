@@ -1,223 +1,224 @@
+// ================== import ==================
 const express = require("express");
 const line = require("@line/bot-sdk");
-const { SMSActivate } = require("sms-activate");
+const SMSActivate = require("sms-activate");
 
-// ============= CONFIG จาก ENV =============
+// ================== CONFIG LINE ==================
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-const SMS_ACTIVATE_API_KEY = process.env.SMS_ACTIVATE_API_KEY;
+// ================== CONFIG SMS-Activate ==================
+const sms = new SMSActivate(process.env.SMS_ACTIVATE_API_KEY);
 
-// สร้าง instance ของ SMS-Activate
-const smsApi = new SMSActivate(SMS_ACTIVATE_API_KEY);
-
-// map บริการที่เราจะใช้ -> service code ของ SMS-Activate
-// service code ตัวอย่าง: 'go' = Google, 'nf' = Netflix (สมมติ)
-// ให้ไปเช็คใน docs ของ SMS-Activate อีกทีว่า code จริงคืออะไร
+// map ชื่อบริการที่เราจะโชว์ในเมนู -> service code ของ SMS-Activate
+// *** สำคัญ: ไปเช็คในเว็บ SMS-Activate ว่า code จริงเป็นอะไร แล้วแก้ให้ตรง ***
+// ส่วนใหญ่: Google = "go", Netflix = "nf" (ให้คุณเช็คอีกที)
 const serviceMap = {
   google: "go",
   netflix: "nf",
+  // ถ้าอยากเพิ่มบริการอื่นก็ค่อยมาเติมทีหลังได้ เช่น
+  // line: "me",
+  // facebook: "fb",
+  // telegram: "tg",
+  // tiktok: "tt",
 };
 
-// ============= สร้าง LINE client & Express app =============
+// ================== LINE client + Express app ==================
 const client = new line.Client(config);
 const app = express();
 
-// ============= Webhook route สำหรับ LINE =============
+// webhook จาก LINE ต้องยิงมาที่ path นี้
 app.post("/webhook", line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then(() => res.status(200).end())
     .catch((err) => {
-      console.error(err);
+      console.error("Error in webhook:", err);
       res.status(500).end();
     });
 });
 
-// ============= handleEvent =============
+// ================== handleEvent หลัก ==================
 async function handleEvent(event) {
-  if (event.type === "message" && event.message.type === "text") {
-    const text = event.message.text.trim();
+  console.log("EVENT FROM LINE:", JSON.stringify(event, null, 2));
 
-    if (text === "เมนู" || text === "เริ่ม" || text.toLowerCase() === "menu") {
-      return replyAppMenu(event.replyToken);
-    } else {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: 'พิมพ์ "เมนู" เพื่อเลือกบริการที่ต้องการเบอร์ OTP (เช่น Google / Netflix)',
-      });
+  // ข้อความธรรมดา
+  if (event.type === "message" && event.message.type === "text") {
+    const text = (event.message.text || "").trim();
+
+    if (text.includes("เมนู") || text.toLowerCase().includes("menu")) {
+      return replyMenu(event.replyToken);
     }
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: 'พิมพ์คำว่า "เมนู" เพื่อเลือกบริการที่ต้องการเบอร์ OTP (เช่น Google / Netflix)',
+    });
   }
 
+  // กดปุ่ม (postback)
   if (event.type === "postback") {
     const data = event.postback.data; // เช่น "svc=google"
     const params = new URLSearchParams(data);
     const svc = params.get("svc"); // google / netflix
+
+    const replyToken = event.replyToken;
     const userId = event.source.userId;
 
-    return handleBuyOtpWithSMSActivate(event.replyToken, userId, svc);
+    return handleBuyOtpWithSMSActivate(replyToken, userId, svc);
   }
 
   return Promise.resolve(null);
 }
 
-// ============= Flex Message เมนูเลือกบริการ =============
-function replyAppMenu(replyToken) {
+// ================== เมนูเลือกแอพ (Template message) ==================
+function replyMenu(replyToken) {
   const message = {
-    type: "flex",
-    altText: "เลือกบริการที่ต้องการเบอร์ OTP",
-    contents: {
-      type: "bubble",
-      size: "mega",
-      body: {
-        type: "box",
-        layout: "vertical",
-        contents: [
-          {
-            type: "text",
-            text: "เลือกบริการที่ต้องการเบอร์ OTP",
-            weight: "bold",
-            size: "lg",
-            align: "center",
-          },
-          {
-            type: "box",
-            layout: "horizontal",
-            margin: "lg",
-            spacing: "md",
-            contents: [
-              // ปุ่ม Google
-              {
-                type: "box",
-                layout: "vertical",
-                flex: 1,
-                alignItems: "center",
-                action: {
-                  type: "postback",
-                  label: "Google",
-                  data: "svc=google",
-                },
-                contents: [
-                  {
-                    type: "image",
-                    url: "https://i.imgur.com/xIY5sVZ.png",
-                    size: "xl",
-                    aspectRatio: "1:1",
-                  },
-                  {
-                    type: "text",
-                    text: "Google",
-                    size: "sm",
-                    align: "center",
-                    margin: "sm",
-                  },
-                ],
-              },
-              // ปุ่ม Netflix
-              {
-                type: "box",
-                layout: "vertical",
-                flex: 1,
-                alignItems: "center",
-                action: {
-                  type: "postback",
-                  label: "Netflix",
-                  data: "svc=netflix",
-                },
-                contents: [
-                  {
-                    type: "image",
-                    url: "https://i.imgur.com/0e5gZUX.png",
-                    size: "xl",
-                    aspectRatio: "1:1",
-                  },
-                  {
-                    type: "text",
-                    text: "Netflix",
-                    size: "sm",
-                    align: "center",
-                    margin: "sm",
-                  },
-                ],
-              },
-            ],
-          },
-          {
-            type: "text",
-            text: 'พิมพ์ "เมนู" เพื่อเปิดหน้านี้อีกครั้ง',
-            size: "xs",
-            color: "#888888",
-            align: "center",
-            margin: "lg",
-          },
-        ],
-      },
+    type: "template",
+    altText: "เลือกแอพที่ต้องการใช้เบอร์ OTP",
+    template: {
+      type: "buttons",
+      title: "เลือกแอพ",
+      text: "เลือกบริการที่ต้องการใช้เบอร์ OTP",
+      actions: [
+        {
+          type: "postback",
+          label: "Google",
+          data: "svc=google",
+        },
+        {
+          type: "postback",
+          label: "Netflix",
+          data: "svc=netflix",
+        },
+        // ถ้าอยากเพิ่มปุ่มอื่น ให้ใส่ต่อได้สูงสุด 4 ปุ่ม
+        // {
+        //   type: "postback",
+        //   label: "Facebook",
+        //   data: "svc=facebook",
+        // },
+        // {
+        //   type: "postback",
+        //   label: "LINE",
+        //   data: "svc=line",
+        // },
+      ],
     },
   };
 
   return client.replyMessage(replyToken, message);
 }
 
-// ============= ฟังก์ชันซื้อเบอร์ + รับ OTP จาก SMS-Activate =============
+// ================== ฟังก์ชันหลัก: ซื้อเบอร์ + รอ OTP ==================
 async function handleBuyOtpWithSMSActivate(replyToken, userId, svcKey) {
   try {
+    if (!svcKey) {
+      return client.replyMessage(replyToken, {
+        type: "text",
+        text: "ไม่พบบริการที่เลือก ลองพิมพ์เมนูใหม่อีกครั้งนะครับ/ค่ะ",
+      });
+    }
+
     const serviceCode = serviceMap[svcKey];
 
     if (!serviceCode) {
       return client.replyMessage(replyToken, {
         type: "text",
-        text: `ยังไม่ได้ตั้งค่าบริการสำหรับ '${svcKey}'`,
+        text:
+          `ยังไม่ได้ตั้ง service code สำหรับ '${svcKey}'\n` +
+          `ให้เข้าไปแก้ในไฟล์ index.js ตรง serviceMap ก่อน`,
       });
     }
 
-    // 0 = auto country (ดูจาก docs ว่าจะใช้ country ไหน เช่น 0 หรือ code ประเทศ)
-    const country = 0;
+    // 1) เช็คยอดคงเหลือก่อน
+    const balance = await sms.getBalance();
+    console.log("SMS-Activate balance:", balance);
 
-    // ขอเบอร์จาก SMS-Activate
-    const number = await smsApi.getNumber({
-      service: serviceCode,
-      country: country,
-    });
+    if (Number(balance) <= 0) {
+      return client.replyMessage(replyToken, {
+        type: "text",
+        text: "ยอดเงินใน SMS-Activate ไม่พอ กรุณาเติมเงินก่อนนะครับ/ค่ะ",
+      });
+    }
 
-    const phoneNumber = number.phoneNumber;
-    console.log(`Got number for ${svcKey}:`, phoneNumber);
+    // 2) ขอเบอร์จาก SMS-Activate
+    console.log("Requesting number for service:", serviceCode);
+    const { id, number } = await sms.getNumber(serviceCode);
+    console.log("Got number:", { id, number });
+
+    // แจ้งสถานะว่าเบอร์พร้อมแล้ว (1 = ready) ตามตัวอย่างใน docs  [oai_citation:1‡Skypack](https://www.skypack.dev/view/sms-activate-api)
+    await sms.setStatus(id, 1);
 
     // ตอบเบอร์ให้ user ก่อน
     await client.replyMessage(replyToken, {
       type: "text",
       text:
         `📱 เบอร์สำหรับ ${svcKey.toUpperCase()} ของคุณคือ:\n` +
-        `${phoneNumber}\n\nกำลังรอ OTP...`,
+        `${number}\n\nโปรดนำเบอร์นี้ไปกรอกในแอพ แล้วรอ OTP...`,
     });
 
-    // รอ OTP (ถ้าไม่มีมาในเวลาที่ lib กำหนดจะ throw error)
-    const code = await number.getCode();
-    console.log("Received OTP:", code);
+    // 3) เริ่มวนเช็คโค้ด OTP ทุก ๆ N วินาที
+    const intervalMs = 5000; // 5 วิ เช็คครั้ง
+    const maxTries = 24; // รวม ~2 นาที
+    let tries = 0;
 
-    // บอก SMS-Activate ว่าใช้เสร็จแล้ว success
-    await number.success();
+    const timer = setInterval(async () => {
+      try {
+        tries += 1;
+        console.log(`Polling code (try ${tries}/${maxTries}) for id=${id}`);
+        const code = await sms.getCode(id);
 
-    // ส่ง OTP ให้ user (push ไปยัง user)
-    await client.pushMessage(userId, {
-      type: "text",
-      text:
-        `✅ ได้รับ OTP แล้ว\n\n` +
-        `บริการ: ${svcKey.toUpperCase()}\n` +
-        `เบอร์: ${phoneNumber}\n` +
-        `OTP: ${code}`,
-    });
+        if (code) {
+          clearInterval(timer);
+          console.log("Got OTP code:", code);
+
+          // 6 = activation complete  [oai_citation:2‡Skypack](https://www.skypack.dev/view/sms-activate-api)
+          await sms.setStatus(id, 6);
+
+          await client.pushMessage(userId, {
+            type: "text",
+            text:
+              `✅ ได้รับ OTP แล้ว\n\n` +
+              `บริการ: ${svcKey.toUpperCase()}\n` +
+              `เบอร์: ${number}\n` +
+              `OTP: ${code}`,
+          });
+        } else if (tries >= maxTries) {
+          clearInterval(timer);
+          console.log("Timeout waiting for OTP, cancel activation");
+
+          // 8 = cancel activation  [oai_citation:3‡Skypack](https://www.skypack.dev/view/sms-activate-api?utm_source=chatgpt.com)
+          await sms.setStatus(id, 8);
+
+          await client.pushMessage(userId, {
+            type: "text",
+            text:
+              `⚠ หมดเวลารอ OTP สำหรับ ${svcKey.toUpperCase()} แล้ว\n` +
+              `ลองกดเมนูแล้วขอเบอร์ใหม่อีกครั้งนะครับ/ค่ะ`,
+          });
+        }
+      } catch (pollErr) {
+        console.error("Error while polling code:", pollErr);
+        clearInterval(timer);
+
+        await client.pushMessage(userId, {
+          type: "text",
+          text: "⚠ เกิดข้อผิดพลาดระหว่างรอ OTP กรุณาลองใหม่อีกครั้ง",
+        });
+      }
+    }, intervalMs);
   } catch (err) {
-    console.error("Error in SMS-Activate:", err);
+    console.error("Error in handleBuyOtpWithSMSActivate:", err);
 
     return client.replyMessage(replyToken, {
       type: "text",
-      text: "❌ ขอเบอร์/OTP ไม่สำเร็จ ลองใหม่อีกครั้งนะครับ/ค่ะ",
+      text: "⚠ ระบบมีปัญหาชั่วคราว ลองใหม่อีกครั้งนะครับ/ค่ะ",
     });
   }
 }
 
-// ============= Start server =============
+// ================== start server ==================
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
