@@ -1,5 +1,5 @@
 {
-  "name": "line-otp24hr-bot",
+  "name": "line-sms-activate-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
@@ -8,6 +8,7 @@
   "dependencies": {
     "@line/bot-sdk": "^9.0.0",
     "axios": "^1.7.0",
-    "express": "^4.18.0"
+    "express": "^4.18.0",
+    "sms-activate": "^1.0.7"
   }
 }
