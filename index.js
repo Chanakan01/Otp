@@ -1,30 +1,31 @@
 const express = require("express");
 const line = require("@line/bot-sdk");
-const axios = require("axios");
+const { SMSActivate } = require("sms-activate");
 
-// ================= CONFIG จาก ENV =================
+// ============= CONFIG จาก ENV =============
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-const PHONE_API_KEY = process.env.PHONE_API_KEY;          // keyapi จาก otp24hr
-const PHONE_API_URL = process.env.PHONE_API_URL;          // เช่น https://otp24hr.com/api/v1
+const SMS_ACTIVATE_API_KEY = process.env.SMS_ACTIVATE_API_KEY;
 
-// map ชื่อแอพ (ฝั่ง LINE) -> type_code ของ otp24hr
-// ❗ ไปดูที่เอกสาร getpack ว่ารหัส type_code ของแอพแต่ละตัวคืออะไร แล้วแก้เลขตรงนี้
-const productMap = {
-  facebook: 127,   // ตัวอย่าง: type_code ของ Facebook
-  tiktok: 140,     // แก้ตามจริง
-  line: 145,       // แก้ตามจริง
-  telegram: 150    // แก้ตามจริง
+// สร้าง instance ของ SMS-Activate
+const smsApi = new SMSActivate(SMS_ACTIVATE_API_KEY);
+
+// map บริการที่เราจะใช้ -> service code ของ SMS-Activate
+// service code ตัวอย่าง: 'go' = Google, 'nf' = Netflix (สมมติ)
+// ให้ไปเช็คใน docs ของ SMS-Activate อีกทีว่า code จริงคืออะไร
+const serviceMap = {
+  google: "go",
+  netflix: "nf",
 };
 
-// ================= สร้าง LINE client & Express app =================
+// ============= สร้าง LINE client & Express app =============
 const client = new line.Client(config);
 const app = express();
 
-// ================= ROUTE สำหรับ LINE Webhook =================
+// ============= Webhook route สำหรับ LINE =============
 app.post("/webhook", line.middleware(config), (req, res) => {
   Promise.all(req.body.events.map(handleEvent))
     .then(() => res.status(200).end())
@@ -34,132 +35,189 @@ app.post("/webhook", line.middleware(config), (req, res) => {
     });
 });
 
-// ================= HANDLE EVENT หลัก =================
+// ============= handleEvent =============
 async function handleEvent(event) {
-  // ข้อความธรรมดา
   if (event.type === "message" && event.message.type === "text") {
     const text = event.message.text.trim();
 
-    if (text === "เมนู" || text === "เริ่ม" || text === "ซื้อเบอร์") {
+    if (text === "เมนู" || text === "เริ่ม" || text.toLowerCase() === "menu") {
       return replyAppMenu(event.replyToken);
     } else {
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: 'พิมพ์คำว่า "เมนู" หรือ "ซื้อเบอร์" เพื่อเลือกแอพที่ต้องการใช้เบอร์ 😊',
+        text: 'พิมพ์ "เมนู" เพื่อเลือกบริการที่ต้องการเบอร์ OTP (เช่น Google / Netflix)',
       });
     }
   }
 
-  // กดปุ่ม postback จากเมนู
   if (event.type === "postback") {
-    const data = event.postback.data;        // เช่น "app=facebook"
+    const data = event.postback.data; // เช่น "svc=google"
     const params = new URLSearchParams(data);
-    const appName = params.get("app");       // facebook / line / tiktok / telegram
-    const replyToken = event.replyToken;
+    const svc = params.get("svc"); // google / netflix
     const userId = event.source.userId;
 
-    return handleBuyNumber(replyToken, appName, userId);
+    return handleBuyOtpWithSMSActivate(event.replyToken, userId, svc);
   }
 
   return Promise.resolve(null);
 }
 
-// ================= เมนูเลือกแอพ =================
+// ============= Flex Message เมนูเลือกบริการ =============
 function replyAppMenu(replyToken) {
   const message = {
-    type: "template",
-    altText: "เลือกแอพที่ต้องการใช้เบอร์",
-    template: {
-      type: "buttons",
-      text: "เลือกแอพที่ต้องการใช้เบอร์",
-      actions: [
-        {
-          type: "postback",
-          label: "Facebook",
-          data: "app=facebook",
-        },
-        {
-          type: "postback",
-          label: "LINE",
-          data: "app=line",
-        },
-        {
-          type: "postback",
-          label: "Telegram",
-          data: "app=telegram",
-        },
-        {
-          type: "postback",
-          label: "Tiktok",
-          data: "app=tiktok",
-        },
-      ],
+    type: "flex",
+    altText: "เลือกบริการที่ต้องการเบอร์ OTP",
+    contents: {
+      type: "bubble",
+      size: "mega",
+      body: {
+        type: "box",
+        layout: "vertical",
+        contents: [
+          {
+            type: "text",
+            text: "เลือกบริการที่ต้องการเบอร์ OTP",
+            weight: "bold",
+            size: "lg",
+            align: "center",
+          },
+          {
+            type: "box",
+            layout: "horizontal",
+            margin: "lg",
+            spacing: "md",
+            contents: [
+              // ปุ่ม Google
+              {
+                type: "box",
+                layout: "vertical",
+                flex: 1,
+                alignItems: "center",
+                action: {
+                  type: "postback",
+                  label: "Google",
+                  data: "svc=google",
+                },
+                contents: [
+                  {
+                    type: "image",
+                    url: "https://i.imgur.com/xIY5sVZ.png",
+                    size: "xl",
+                    aspectRatio: "1:1",
+                  },
+                  {
+                    type: "text",
+                    text: "Google",
+                    size: "sm",
+                    align: "center",
+                    margin: "sm",
+                  },
+                ],
+              },
+              // ปุ่ม Netflix
+              {
+                type: "box",
+                layout: "vertical",
+                flex: 1,
+                alignItems: "center",
+                action: {
+                  type: "postback",
+                  label: "Netflix",
+                  data: "svc=netflix",
+                },
+                contents: [
+                  {
+                    type: "image",
+                    url: "https://i.imgur.com/0e5gZUX.png",
+                    size: "xl",
+                    aspectRatio: "1:1",
+                  },
+                  {
+                    type: "text",
+                    text: "Netflix",
+                    size: "sm",
+                    align: "center",
+                    margin: "sm",
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            type: "text",
+            text: 'พิมพ์ "เมนู" เพื่อเปิดหน้านี้อีกครั้ง',
+            size: "xs",
+            color: "#888888",
+            align: "center",
+            margin: "lg",
+          },
+        ],
+      },
     },
   };
 
   return client.replyMessage(replyToken, message);
 }
 
-// ================= เรียก API otp24hr เพื่อซื้อเบอร์ (buyotp) =================
-async function handleBuyNumber(replyToken, appName, userId) {
+// ============= ฟังก์ชันซื้อเบอร์ + รับ OTP จาก SMS-Activate =============
+async function handleBuyOtpWithSMSActivate(replyToken, userId, svcKey) {
   try {
-    const typeCode = productMap[appName];
+    const serviceCode = serviceMap[svcKey];
 
-    if (!typeCode) {
+    if (!serviceCode) {
       return client.replyMessage(replyToken, {
         type: "text",
-        text: `ยังไม่ได้ตั้งรหัสสินค้า (type_code) สำหรับแอพ '${appName}' เลยครับ/ค่ะ`,
+        text: `ยังไม่ได้ตั้งค่าบริการสำหรับ '${svcKey}'`,
       });
     }
 
-    // ส่งแบบ urlencoded (ใช้ง่าย และเซิร์ฟเวอร์ส่วนใหญ่รับเหมือน form-data)
-    const body = new URLSearchParams();
-    body.append("keyapi", PHONE_API_KEY);
-    body.append("type", String(typeCode));
-    body.append("ct", "52"); // 52 = Thailand ตาม docs
+    // 0 = auto country (ดูจาก docs ว่าจะใช้ country ไหน เช่น 0 หรือ code ประเทศ)
+    const country = 0;
 
-    const url = `${PHONE_API_URL}?action=buyotp`;
-
-    const response = await axios.post(url, body);
-    const data = response.data;
-
-    console.log("buyotp response:", data);
-
-    if (data.status !== "success") {
-      return client.replyMessage(replyToken, {
-        type: "text",
-        text:
-          `❌ ซื้อเบอร์ไม่สำเร็จ\n` +
-          `แอพ: ${appName}\n` +
-          `สาเหตุ: ${data.msg || "ไม่ทราบสาเหตุ"}`
-      });
-    }
-
-    const msgText =
-      `🎉 ซื้อเบอร์สำเร็จแล้ว!\n\n` +
-      `📌 แอพ: ${data.app}\n` +
-      `📱 เบอร์: ${data.number}\n` +
-      `🆔 Order ID: ${data.order_id}\n` +
-      `💸 ราคาต้นทุน: ${data.price_ori}\n` +
-      `💳 เครดิตคงเหลือ: ${data.credit_tottal}\n\n` +
-      `เก็บ Order ID ไว้ใช้เช็ค OTP ต่อได้ (ผ่าน endpoint otp_status)`;
-
-    return client.replyMessage(replyToken, {
-      type: "text",
-      text: msgText,
+    // ขอเบอร์จาก SMS-Activate
+    const number = await smsApi.getNumber({
+      service: serviceCode,
+      country: country,
     });
 
+    const phoneNumber = number.phoneNumber;
+    console.log(`Got number for ${svcKey}:`, phoneNumber);
+
+    // ตอบเบอร์ให้ user ก่อน
+    await client.replyMessage(replyToken, {
+      type: "text",
+      text:
+        `📱 เบอร์สำหรับ ${svcKey.toUpperCase()} ของคุณคือ:\n` +
+        `${phoneNumber}\n\nกำลังรอ OTP...`,
+    });
+
+    // รอ OTP (ถ้าไม่มีมาในเวลาที่ lib กำหนดจะ throw error)
+    const code = await number.getCode();
+    console.log("Received OTP:", code);
+
+    // บอก SMS-Activate ว่าใช้เสร็จแล้ว success
+    await number.success();
+
+    // ส่ง OTP ให้ user (push ไปยัง user)
+    await client.pushMessage(userId, {
+      type: "text",
+      text:
+        `✅ ได้รับ OTP แล้ว\n\n` +
+        `บริการ: ${svcKey.toUpperCase()}\n` +
+        `เบอร์: ${phoneNumber}\n` +
+        `OTP: ${code}`,
+    });
   } catch (err) {
-    console.error("Error calling buyotp:", err?.response?.data || err.message);
+    console.error("Error in SMS-Activate:", err);
 
     return client.replyMessage(replyToken, {
       type: "text",
-      text: "⚠ ระบบมีปัญหาชั่วคราว ลองใหม่อีกครั้งนะครับ/ค่ะ",
+      text: "❌ ขอเบอร์/OTP ไม่สำเร็จ ลองใหม่อีกครั้งนะครับ/ค่ะ",
     });
   }
 }
 
-// ================= START SERVER (Render จะกำหนด PORT มาให้) =================
+// ============= Start server =============
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
